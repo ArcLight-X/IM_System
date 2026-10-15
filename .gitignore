@@ -1,0 +1,18 @@
+# 编译产物（go build 生成的可执行文件）
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go 测试 / 覆盖率产物
+*.test
+*.out
+coverage.txt
+
+# 编辑器临时文件
+*.swp
+*~
+
+# 系统文件
+Thumbs.db
+Desktop.ini

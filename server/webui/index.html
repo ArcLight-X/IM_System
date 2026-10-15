@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IM 聊天室</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="brand">IM 聊天室</div>
+      <div class="me">我：<span id="me-name">未连接</span></div>
+      <div class="actions">
+        <button id="btn-new" title="再打开一个客户端窗口">新窗口</button>
+        <button id="btn-who">在线用户</button>
+        <button id="btn-rename">改名</button>
+        <button id="btn-leave">断开</button>
+      </div>
+      <div id="status" class="status">连接中…</div>
+    </header>
+
+    <main id="log" class="log"></main>
+
+    <footer>
+      <select id="mode" title="发送模式">
+        <option value="public">公聊</option>
+        <option value="private">私聊</option>
+        <option value="ai">AI 问答</option>
+      </select>
+      <input id="target" class="target hidden" placeholder="对方用户名" autocomplete="off">
+      <input id="input" class="input" placeholder="输入内容，回车发送" autocomplete="off">
+      <button id="btn-send" class="primary">发送</button>
+      <button id="btn-summary" title="总结最近 20 条聊天记录">摘要</button>
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
