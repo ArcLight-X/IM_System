@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -13,7 +15,11 @@ import (
 	"time"
 )
 
-const messageChanBuffer = 64
+const (
+	messageChanBuffer   = 64
+	maxMessageBytes     = 4096
+	defaultWriteTimeout = 5 * time.Second
+)
 
 type Server struct {
 	Ip   string
@@ -26,12 +32,14 @@ type Server struct {
 	// 消息广播的 channel
 	Message chan string
 
-	IdleTimeout time.Duration
-	AITimeout   time.Duration
+	IdleTimeout  time.Duration
+	AITimeout    time.Duration
+	WriteTimeout time.Duration
 
 	// 聊天记录，供 /summary 与 AI 上下文使用
-	History *History
-	ai      *AIHandler
+	History        *History
+	contextHistory *contextHistory
+	ai             *AIHandler
 
 	// 网页版客户端监听地址；为空表示不启用
 	webAddr string
@@ -51,7 +59,10 @@ func WithAIHandler(h *AIHandler) ServerOption {
 
 // WithHistoryCapacity 设置聊天记录缓冲容量。
 func WithHistoryCapacity(n int) ServerOption {
-	return func(s *Server) { s.History = NewHistory(n) }
+	return func(s *Server) {
+		s.History = NewHistory(n)
+		s.contextHistory = newContextHistory(n)
+	}
 }
 
 // WithIdleTimeout 设置用户空闲踢出时间。
@@ -72,6 +83,15 @@ func WithAITimeout(d time.Duration) ServerOption {
 	}
 }
 
+// WithWriteTimeout 设置向客户端写入一条消息的最长等待时间。
+func WithWriteTimeout(d time.Duration) ServerOption {
+	return func(s *Server) {
+		if d > 0 {
+			s.WriteTimeout = d
+		}
+	}
+}
+
 // WithWebUI 启用网页版客户端：浏览器每个窗口即一个客户端。
 // addr 为空时使用默认地址 127.0.0.1:8080；不调用该选项则不启用。
 func WithWebUI(addr string) ServerOption {
@@ -87,14 +107,16 @@ func WithWebUI(addr string) ServerOption {
 // 创建 server 接口
 func NewServer(ip string, port int, opts ...ServerOption) *Server {
 	server := &Server{
-		Ip:          ip,
-		Port:        port,
-		OnlineMap:   make(map[string]*User),
-		Message:     make(chan string, messageChanBuffer),
-		IdleTimeout: time.Second * 100,
-		AITimeout:   time.Second * 30,
-		History:     NewHistory(200),
-		done:        make(chan struct{}),
+		Ip:             ip,
+		Port:           port,
+		OnlineMap:      make(map[string]*User),
+		Message:        make(chan string, messageChanBuffer),
+		IdleTimeout:    time.Second * 1000,
+		AITimeout:      time.Second * 30,
+		WriteTimeout:   defaultWriteTimeout,
+		History:        NewHistory(200),
+		contextHistory: newContextHistory(200),
+		done:           make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(server)
@@ -213,21 +235,25 @@ func (this *Server) Handler(conn net.Conn) {
 
 	// 接受客户端发送的消息
 	go func() {
-		buf := make([]byte, 4096)
+		// 允许 4096 字节内容加上 CRLF；ReadSlice 遇到更长的行会返回 ErrBufferFull。
+		reader := bufio.NewReaderSize(conn, maxMessageBytes+2)
 		for {
-			n, err := conn.Read(buf)
+			line, err := reader.ReadSlice('\n')
 			if err != nil {
-				if err != io.EOF {
+				if errors.Is(err, bufio.ErrBufferFull) {
+					user.SendMsg("消息过长\n")
+				} else if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
 					log.Printf("conn read err: %v", err)
 				}
 				user.Close()
 				return
 			}
-			if n == 0 {
-				continue
+			msg := strings.TrimSuffix(string(line[:len(line)-1]), "\r")
+			if len(msg) > maxMessageBytes {
+				user.SendMsg("消息过长\n")
+				user.Close()
+				return
 			}
-			// 去掉行尾的 \r\n
-			msg := strings.TrimRight(string(buf[:n]), "\r\n")
 			user.DoMessage(msg)
 			// 用户任意操作，说明活跃
 			select {

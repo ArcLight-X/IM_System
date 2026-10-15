@@ -206,6 +206,25 @@ func TestAskCacheAvoidsDuplicateCalls(t *testing.T) {
 	}
 }
 
+func TestAskCacheSeparatesUsersAndContext(t *testing.T) {
+	client := &fakeClient{}
+	h := NewAIHandler(client, WithRetries(0), WithCache(time.Minute, 8))
+	ctx := context.Background()
+	a := []llm.Message{{Role: llm.RoleUser, Content: "[私聊] alice对bob说：第一条"}}
+	b := []llm.Message{{Role: llm.RoleUser, Content: "[私聊] alice对bob说：第二条"}}
+	for _, tc := range []struct {
+		user    string
+		history []llm.Message
+	}{{"bob", a}, {"bob", a}, {"bob", b}, {"alice", a}} {
+		if _, err := h.Ask(ctx, tc.user, "该怎么回答？", tc.history); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := client.callCount(); got != 3 {
+		t.Fatalf("不同用户或上下文应分别调用模型，实际调用 %d 次", got)
+	}
+}
+
 func TestAskRetriesRetryableError(t *testing.T) {
 	retryableErr := &llm.StatusError{Status: 503, Body: "unavailable"}
 	client := &fakeClient{
@@ -355,6 +374,25 @@ func TestSummarizeEmptyHistory(t *testing.T) {
 	h := NewAIHandler(&fakeClient{}, WithRetries(0))
 	if _, err := h.Summarize(context.Background(), "u", nil); err == nil {
 		t.Error("空记录应返回错误")
+	}
+}
+
+func TestPolishUsesDraftOnly(t *testing.T) {
+	var captured []llm.Message
+	client := &fakeClient{fn: func(_ context.Context, msgs []llm.Message) (string, error) {
+		captured = msgs
+		return "大家好！", nil
+	}}
+	h := NewAIHandler(client, WithRetries(0))
+	got, err := h.Polish(context.Background(), "alice", " 大家好 ")
+	if err != nil || got != "大家好！" {
+		t.Fatalf("Polish = %q, %v", got, err)
+	}
+	if len(captured) != 2 || captured[0].Role != llm.RoleSystem || !strings.Contains(captured[0].Content, "润色") || captured[1].Content != "大家好" {
+		t.Fatalf("润色请求应只包含指令和草稿: %+v", captured)
+	}
+	if _, err := h.Polish(context.Background(), "alice", "  "); !errors.Is(err, ErrEmptyQuestion) {
+		t.Fatalf("空草稿应拒绝，实际: %v", err)
 	}
 }
 

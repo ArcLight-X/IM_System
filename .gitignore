@@ -16,3 +16,6 @@ coverage.txt
 # 系统文件
 Thumbs.db
 Desktop.ini
+
+# 本地 API 密钥配置（只提交 .env.example）
+.env

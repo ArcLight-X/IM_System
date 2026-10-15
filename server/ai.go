@@ -18,6 +18,7 @@ const (
 	// 摘要任务的系统提示词
 	summarySystemPrompt = `你是一个群聊摘要助手。请用不超过 5 条要点总结给定的聊天记录，` +
 		`突出结论、待办与未解决的问题；只依据记录内容，不要编造不存在的信息。`
+	polishSystemPrompt = `请润色用户的聊天草稿，保持原意和语气，语言自然简洁。只输出润色后的文本，不要解释。`
 
 	defaultMaxContextTokens = 2000
 	// 无论预算多紧，都给最后一条消息留出空间
@@ -176,7 +177,16 @@ func (h *AIHandler) Ask(ctx context.Context, userID, question string, history []
 		return "", ErrEmptyQuestion
 	}
 	msgs := buildMessages(h.systemPrompt, history, question, h.maxContextTokens)
-	return h.complete(ctx, userID, cacheKey("ask", question), msgs)
+	// 相同问题在不同用户或不同聊天上下文中，不能复用彼此的回答。
+	var key strings.Builder
+	key.WriteString(userID)
+	for _, msg := range msgs {
+		key.WriteByte(0)
+		key.WriteString(msg.Role)
+		key.WriteByte(0)
+		key.WriteString(msg.Content)
+	}
+	return h.complete(ctx, userID, cacheKey("ask", key.String()), msgs)
 }
 
 // Summarize 总结聊天记录。
@@ -190,6 +200,19 @@ func (h *AIHandler) Summarize(ctx context.Context, userID string, lines []string
 		{Role: llm.RoleUser, Content: "请总结以下聊天记录：\n" + joined},
 	}
 	return h.complete(ctx, userID, cacheKey("summary", joined), msgs)
+}
+
+// Polish 润色一条尚未发送的聊天草稿，不使用群聊历史。
+func (h *AIHandler) Polish(ctx context.Context, userID, draft string) (string, error) {
+	draft = strings.TrimSpace(draft)
+	if draft == "" {
+		return "", ErrEmptyQuestion
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: polishSystemPrompt},
+		{Role: llm.RoleUser, Content: draft},
+	}
+	return h.complete(ctx, userID, cacheKey("polish", draft), msgs)
 }
 
 // Stats 返回统计快照。

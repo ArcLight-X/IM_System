@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"server-demo/internal/llm"
 )
@@ -85,10 +87,21 @@ func (this *User) Close() {
 // 加锁保证多个 goroutine 不会同时写同一个连接。
 func (this *User) SendMsg(msg string) {
 	this.writeMu.Lock()
-	defer this.writeMu.Unlock()
-	if _, err := this.conn.Write([]byte(msg)); err != nil {
-		// 写失败说明连接已不可用，清理交给读侧，这里不打扰用户
+	select {
+	case <-this.done:
+		this.writeMu.Unlock()
+		return
+	default:
+	}
+	err := this.conn.SetWriteDeadline(time.Now().Add(this.server.WriteTimeout))
+	if err == nil {
+		_, err = io.WriteString(this.conn, msg)
+	}
+	this.writeMu.Unlock()
+	if err != nil {
+		// 写超时后连接不可继续复用；先释放写锁，再关闭连接并清理在线状态。
 		log.Printf("write to %s failed: %v", this.Addr, err)
+		this.Close()
 	}
 }
 
@@ -142,12 +155,46 @@ func (this *User) DoMessage(msg string) {
 		this.sendHelp()
 	case msg == "/ai" || strings.HasPrefix(msg, "/ai "):
 		this.handleAI(strings.TrimSpace(strings.TrimPrefix(msg, "/ai")))
+	case msg == "/polish" || strings.HasPrefix(msg, "/polish "):
+		this.handlePolish(strings.TrimSpace(strings.TrimPrefix(msg, "/polish")))
 	case msg == "/summary" || strings.HasPrefix(msg, "/summary "):
 		this.handleSummary(strings.TrimSpace(strings.TrimPrefix(msg, "/summary")))
 	default:
 		this.server.History.Add("[" + this.Name + "]: " + msg)
+		this.server.contextHistory.add("[公聊] "+this.Name+"："+msg, this, nil)
 		this.server.BroadCast(this, msg)
 	}
+}
+
+// 一键润色仅向发起者返回建议，不发送到聊天室。
+func (this *User) handlePolish(draft string) {
+	if draft == "" {
+		this.SendMsg("用法：/polish 要润色的内容\n")
+		return
+	}
+	if this.server.ai == nil {
+		this.SendMsg("[AI] 未配置模型服务：请设置环境变量 LLM_API_KEY 后重启服务器\n")
+		return
+	}
+	if !this.aiMu.TryLock() {
+		this.SendMsg("[AI] 上一个请求还在处理中，请稍候\n")
+		return
+	}
+	this.SendMsg("[AI] 正在润色…\n")
+	go func() {
+		defer this.aiMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), this.server.AITimeout)
+		defer cancel()
+		reply, err := this.server.ai.Polish(ctx, this.Addr, draft)
+		if err != nil {
+			log.Printf("ai polish failed for %s: %v", this.Addr, err)
+			this.SendMsg("[AI] 润色失败，请稍后重试\n")
+			return
+		}
+		// TCP 协议按行展示，润色建议压成一行，便于网页客户端回填草稿。
+		reply = strings.Join(strings.Fields(reply), " ")
+		this.SendMsg("[AI] 润色建议：" + reply + "\n")
+	}()
 }
 
 // 查询当前在线用户
@@ -214,7 +261,11 @@ func (this *User) handlePrivate(msg string) {
 		this.SendMsg("该用户名不存在\n")
 		return
 	}
+	this.server.contextHistory.add("[私聊] "+this.Name+"对"+remoteName+"说："+content, this, remoteUser)
 	remoteUser.SendMsg(this.Name + "对你说：" + content + "\n")
+	if remoteUser != this {
+		this.SendMsg("[" + this.Name + "对" + remoteName + "说]：" + content + "\n")
+	}
 }
 
 // AI 问答：/ai 你的问题
@@ -234,8 +285,8 @@ func (this *User) handleAI(question string) {
 
 	this.SendMsg("[AI] 正在思考…\n")
 
-	// 取最近的聊天记录作为上下文，由 AIHandler 按 token 预算裁剪
-	lines := this.server.History.Recent(12)
+	// 包含公聊和自己参与的私聊；第三人的私聊不会进入本次请求。
+	lines := this.server.contextHistory.recentFor(this, 12)
 	history := make([]llm.Message, 0, len(lines))
 	for _, line := range lines {
 		history = append(history, llm.Message{Role: llm.RoleUser, Content: line})
@@ -251,7 +302,7 @@ func (this *User) handleAI(question string) {
 		if err != nil {
 			log.Printf("ai ask failed for %s: %v", this.Addr, err)
 		}
-		this.SendMsg("[AI] " + reply + "\n")
+		this.SendMsg("[AI] " + strings.ReplaceAll(reply, "\n", "\n[AI] ") + "\n")
 	}()
 }
 
@@ -292,7 +343,7 @@ func (this *User) handleSummary(arg string) {
 		if err != nil {
 			log.Printf("ai summary failed for %s: %v", this.Addr, err)
 		}
-		this.SendMsg("[AI] 群聊摘要：\n" + reply + "\n")
+		this.SendMsg("[AI] 群聊摘要：\n[AI] " + strings.ReplaceAll(reply, "\n", "\n[AI] ") + "\n")
 	}()
 }
 
@@ -303,5 +354,6 @@ func (this *User) sendHelp() {
 		"  rename|新用户名   改名\n" +
 		"  who               查询在线用户\n" +
 		"  /ai 问题          向 AI 助手提问\n" +
+		"  /polish 内容      润色草稿（不会自动发送）\n" +
 		"  /summary [条数]   总结最近聊天记录\n")
 }

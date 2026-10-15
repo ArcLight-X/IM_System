@@ -105,6 +105,27 @@ func TestWebUIClientEndToEnd(t *testing.T) {
 	}
 	waitForLine(t, aliceLines, "hello-web")
 	waitForLine(t, bobLines, "[alice]:hello-web")
+	if code := postWeb(t, httpSrv.URL, aliceSession, "to|bob|private-web"); code != http.StatusNoContent {
+		t.Fatalf("private send status = %d, want 204", code)
+	}
+	waitForLine(t, aliceLines, "[alice对bob说]：private-web")
+	waitForLine(t, bobLines, "alice对你说：private-web")
+}
+
+func TestWebUIPolishAndSummary(t *testing.T) {
+	_, tcpAddr := startTestServer(t)
+	httpSrv := httptest.NewServer(NewWebUI(tcpAddr).Handler())
+	t.Cleanup(httpSrv.Close)
+	lines, session := openWebClient(t, httpSrv.URL, "alice")
+	waitForLine(t, lines, "成功更改用户名为 alice")
+	if code := postWeb(t, httpSrv.URL, session, "/polish draft-web"); code != http.StatusNoContent {
+		t.Fatalf("polish status = %d", code)
+	}
+	waitForLine(t, lines, "润色建议：reply:draft-web")
+	if code := postWeb(t, httpSrv.URL, session, "/summary 20"); code != http.StatusNoContent {
+		t.Fatalf("summary status = %d", code)
+	}
+	waitForLine(t, lines, "暂无聊天记录")
 }
 
 func TestWebUISendValidation(t *testing.T) {

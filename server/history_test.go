@@ -77,3 +77,34 @@ func TestHistoryConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestContextHistoryPrivateVisibilityAndOrder(t *testing.T) {
+	h := newContextHistory(3)
+	alice := &User{Name: "alice"}
+	bob := &User{Name: "bob"}
+	charlie := &User{Name: "charlie"}
+	h.add("[公聊] 开始", alice, nil)
+	h.add("[私聊] alice对bob说：只给双方", alice, bob)
+	h.add("[公聊] 结束", charlie, nil)
+
+	got := h.recentFor(bob, 3)
+	if len(got) != 3 || got[0] != "[公聊] 开始" || got[1] != "[私聊] alice对bob说：只给双方" || got[2] != "[公聊] 结束" {
+		t.Fatalf("参与者上下文顺序错误: %v", got)
+	}
+	if got := h.recentFor(charlie, 3); len(got) != 2 || got[0] != "[公聊] 开始" || got[1] != "[公聊] 结束" {
+		t.Fatalf("第三人不应看到私聊: %v", got)
+	}
+	// 改名不会影响当前连接的可见性，别人复用原昵称也不能读取该私聊。
+	bob.Name = "new-bob"
+	oldNameOwner := &User{Name: "bob"}
+	if got := h.recentFor(bob, 3); len(got) != 3 {
+		t.Fatalf("改名后失去私聊上下文: %v", got)
+	}
+	if got := h.recentFor(oldNameOwner, 3); len(got) != 2 {
+		t.Fatalf("复用昵称的用户看到了私聊: %v", got)
+	}
+	h.add("[公聊] 新消息", alice, nil)
+	if got := h.recentFor(bob, 3); len(got) != 3 || got[0] != "[私聊] alice对bob说：只给双方" || got[1] != "[公聊] 结束" || got[2] != "[公聊] 新消息" {
+		t.Fatalf("容量满后应丢弃最旧消息: %v", got)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // 网页版客户端：把浏览器窗口变成 IM 客户端。
@@ -116,7 +117,8 @@ func (w *WebUI) handleEvents(rw http.ResponseWriter, req *http.Request) {
 	rw.WriteHeader(http.StatusOK)
 
 	name := strings.TrimSpace(req.URL.Query().Get("name"))
-	if err := writeSSE(rw, "init", fmt.Sprintf(`{"session":%q,"name":%q}`, sess.id, name)); err != nil {
+	// TCP 新连接在改名成功前以其本地地址为用户名；不要提前把申请的昵称视为已生效。
+	if err := writeSSE(rw, "init", fmt.Sprintf(`{"session":%q,"name":%q}`, sess.id, conn.LocalAddr().String())); err != nil {
 		return
 	}
 	flusher.Flush()
@@ -216,6 +218,9 @@ func (w *WebUI) closeSession(sess *webSession) {
 func (s *webSession) write(text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultWriteTimeout)); err != nil {
+		return err
+	}
 	_, err := s.conn.Write([]byte(text + "\n"))
 	return err
 }

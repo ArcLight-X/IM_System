@@ -60,3 +60,50 @@ func (h *History) Len() int {
 	defer h.mu.Unlock()
 	return len(h.lines)
 }
+
+// contextHistory 保留最近的聊天事件；私聊仅对参与连接可见。
+type contextHistory struct {
+	mu       sync.Mutex
+	entries  []contextEntry
+	capacity int
+}
+
+type contextEntry struct {
+	line      string
+	sender    *User
+	recipient *User // nil 表示公聊
+}
+
+func newContextHistory(capacity int) *contextHistory {
+	if capacity <= 0 {
+		capacity = 200
+	}
+	return &contextHistory{entries: make([]contextEntry, 0, capacity), capacity: capacity}
+}
+
+func (h *contextHistory) add(line string, sender, recipient *User) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.entries) == h.capacity {
+		copy(h.entries, h.entries[1:])
+		h.entries[len(h.entries)-1] = contextEntry{line, sender, recipient}
+		return
+	}
+	h.entries = append(h.entries, contextEntry{line, sender, recipient})
+}
+
+func (h *contextHistory) recentFor(user *User, n int) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	lines := make([]string, 0, n)
+	for i := len(h.entries) - 1; i >= 0 && len(lines) < n; i-- {
+		e := h.entries[i]
+		if e.recipient == nil || e.sender == user || e.recipient == user {
+			lines = append(lines, e.line)
+		}
+	}
+	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
+		lines[i], lines[j] = lines[j], lines[i]
+	}
+	return lines
+}
